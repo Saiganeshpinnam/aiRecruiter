@@ -13,6 +13,7 @@
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
+    "node-fetch": "^3.3.2",
     "pdf-parse": "^2.4.5",
     "pdf-parse-fixed": "^1.1.1",
     "pdf2json": "^4.0.0",
