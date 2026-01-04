@@ -4,8 +4,15 @@ import axios from "axios";
 import fs from "fs";
 import FormData from "form-data";
 import pool from "../models/db.js";
+import authenticate from "../middleware/authMiddleware.js";
+
 
 const router = express.Router();
+
+console.log("✅ candidate routes file loaded");
+
+/* ------------------ Auth Middleware ------------------ */
+router.use(authenticate);
 
 /* ------------------ Multer Config ------------------ */
 const storage = multer.diskStorage({
@@ -17,10 +24,9 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-/* ------------------ Helpers ------------------ */
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/* ------------------ Route ------------------ */
+/* ====================================================
+   POST /upload-resume
+   ==================================================== */
 router.post("/upload-resume", upload.single("resume"), async (req, res) => {
   try {
     if (!req.file) {
@@ -31,11 +37,11 @@ router.post("/upload-resume", upload.single("resume"), async (req, res) => {
       throw new Error("APY_API_KEY missing");
     }
 
-    const userId = req.body.userId;
+    const userId = req.user.id;
     const filePath = req.file.path;
     const fileBuffer = fs.readFileSync(filePath);
 
-    /* ------------------ 1️⃣ Submit Resume ------------------ */
+    /* ---------- Submit resume to ApyHub ---------- */
     const formData = new FormData();
     formData.append("file", fileBuffer, req.file.originalname);
     formData.append("language", "English");
@@ -52,15 +58,15 @@ router.post("/upload-resume", upload.single("resume"), async (req, res) => {
       }
     );
 
-    const { job_id, status_url } = submitRes.data;
+    const { job_id } = submitRes.data;
 
-    if (!job_id || !status_url) {
+    if (!job_id) {
       throw new Error("Invalid response from ApyHub");
     }
 
     console.log("ApyHub job submitted:", job_id);
 
-    /* ------------------ 2️⃣ Persist Parsing State ------------------ */
+    /* ---------- Persist parsing state ---------- */
     await pool.query(
       `
       UPDATE candidates
@@ -72,106 +78,56 @@ router.post("/upload-resume", upload.single("resume"), async (req, res) => {
       [filePath, job_id, userId]
     );
 
-    /* ------------------ 3️⃣ Background Polling (Detached) ------------------ */
-    setImmediate(async () => {
-      try {
-        for (let attempt = 1; attempt <= 10; attempt++) {
-          await sleep(3000);
-
-          const statusRes = await axios.get(status_url, {
-            headers: {
-              "apy-token": process.env.APY_API_KEY,
-            },
-            timeout: 10000,
-          });
-
-          // 🚨 Guard: HTML response = invalid API call
-          if (
-            typeof statusRes.data === "string" &&
-            statusRes.data.startsWith("<!DOCTYPE")
-          ) {
-            throw new Error("ApyHub returned HTML instead of JSON");
-          }
-
-          const status = statusRes.data.status;
-          console.log(`Polling attempt ${attempt}:`, status);
-
-          if (status === "completed") {
-            await pool.query(
-              `
-              UPDATE candidates
-              SET skills = $1,
-                  resume_parse_status = 'completed',
-                  resume_parsed_at = NOW()
-              WHERE user_id = $2
-              `,
-              [JSON.stringify(statusRes.data.result), userId]
-            );
-
-            console.log("Resume parsing completed for user:", userId);
-            return;
-          }
-
-          if (status === "failed") {
-            await pool.query(
-              `
-              UPDATE candidates
-              SET resume_parse_status = 'failed'
-              WHERE user_id = $1
-              `,
-              [userId]
-            );
-
-            console.error("Resume parsing failed for user:", userId);
-            return;
-          }
-        }
-
-        // ⏱️ Timeout case
-        await pool.query(
-          `
-          UPDATE candidates
-          SET resume_parse_status = 'failed'
-          WHERE user_id = $1
-          `,
-          [userId]
-        );
-      } catch (err) {
-        console.error("Background polling error:", {
-          message: err.message,
-          stack: err.stack,
-        });
-
-        try {
-          await pool.query(
-            `
-            UPDATE candidates
-            SET resume_parse_status = 'failed'
-            WHERE user_id = $1
-            `,
-            [userId]
-          );
-        } catch (dbErr) {
-          console.error("DB update failed in polling error:", dbErr.message);
-        }
-      }
-    });
-
-    /* ------------------ 4️⃣ Immediate Response ------------------ */
+    /* ---------- Immediate response ---------- */
     return res.status(202).json({
       message: "Resume uploaded successfully. Parsing in progress.",
       jobId: job_id,
     });
   } catch (err) {
-    console.error("Upload error FULL:", {
-      name: err?.name,
-      message: err?.message,
-      stack: err?.stack,
-      isAxios: !!err?.isAxiosError,
+    console.error("Upload resume error:", {
+      message: err.message,
+      stack: err.stack,
     });
 
     return res.status(500).json({
       error: "Resume upload failed",
+    });
+  }
+});
+
+/* ====================================================
+   GET /resume-status
+   ==================================================== */
+router.get("/resume-status", async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const result = await pool.query(
+      `
+      SELECT resume_parse_status, resume_parsed_at
+      FROM candidates
+      WHERE user_id = $1
+      `,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        error: "Candidate profile not found",
+      });
+    }
+
+    const { resume_parse_status, resume_parsed_at } = result.rows[0];
+
+    return res.json({
+      status: resume_parse_status || "not_started",
+      parsedAt: resume_parsed_at,
+    });
+  } catch (err) {
+    console.error("Resume status error:", err.message);
+
+    return res.status(500).json({
+      error: "Failed to fetch resume status",
     });
   }
 });

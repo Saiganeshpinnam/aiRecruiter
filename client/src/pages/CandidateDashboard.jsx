@@ -2,11 +2,15 @@ import React, { useState } from "react";
 
 const API_URL = "http://localhost:4000/api/candidate/upload-resume";
 
+
+
 export default function CandidateDashboard() {
   const [file, setFile] = useState(null);
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
   const [uploadedPath, setUploadedPath] = useState("");
+
+  const token = localStorage.getItem("token");
 
   // TODO: later use real logged-in userId
   const userId = 1;
@@ -36,7 +40,7 @@ export default function CandidateDashboard() {
         method: "POST",
         body: formData,
         // If later you add JWT auth:
-        // headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` }
       });
 
       const data = await res.json();
