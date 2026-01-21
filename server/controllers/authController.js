@@ -20,16 +20,50 @@ export const register = async (req, res) => {
 
     // Insert user
     const result = await pool.query(
-      `INSERT INTO users (name, email, password_hash, role)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, name, email, role`,
+      `
+      INSERT INTO users (name, email, password_hash, role)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, name, email, role
+      `,
       [name, email, hashedPassword, role]
     );
 
     const user = result.rows[0];
 
-    res.json({
+    // 🔥 CREATE DOMAIN PROFILE
+    if (role === "candidate") {
+      await pool.query(
+        `
+        INSERT INTO candidates (user_id, resume_parse_status)
+        VALUES ($1, 'not_started')
+        `,
+        [user.id]
+      );
+    }
+
+    if (role === "company") {
+      await pool.query(
+        `
+        INSERT INTO companies (user_id, company_name)
+        VALUES ($1, $2)
+        `,
+        [user.id, name]
+      );
+    }
+
+    // 🔐 AUTO-LOGIN (ISSUE JWT)
+    const token = jwt.sign(
+      {
+        id: user.id,
+        role: user.role,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    return res.json({
       success: true,
+      token,
       user,
     });
 
@@ -37,8 +71,8 @@ export const register = async (req, res) => {
     if (err.code === "23505") {
       return res.status(400).json({ error: "Email already exists" });
     }
-    console.error(err);
-    res.status(500).json({ error: "Registration failed" });
+    console.error("Register error:", err.message);
+    return res.status(500).json({ error: "Registration failed" });
   }
 };
 
@@ -68,14 +102,14 @@ export const login = async (req, res) => {
     // Sign JWT
     const token = jwt.sign(
       {
-        userId: user.id,
+        id: user.id,
         role: user.role,
       },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
-    res.json({
+    return res.json({
       success: true,
       token,
       user: {
@@ -83,11 +117,15 @@ export const login = async (req, res) => {
         name: user.name,
         email: user.email,
         role: user.role,
-      }
+      },
     });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Login failed" });
-  }
+  console.error("LOGIN ERROR FULL:", err);
+  console.error("LOGIN ERROR MESSAGE:", err.message);
+  console.error("LOGIN ERROR STACK:", err.stack);
+
+  res.status(500).json({ error: "Login failed" });
+}
+
 };
